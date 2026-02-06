@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/microsoft/azure-devops-go-api/azuredevops/v7/pipelinepermissions"
 	"github.com/microsoft/terraform-provider-azuredevops/azuredevops/internal/client"
 	"github.com/microsoft/terraform-provider-azuredevops/azuredevops/internal/utils"
 	"github.com/microsoft/terraform-provider-azuredevops/azuredevops/internal/utils/converter"
@@ -165,6 +166,22 @@ func resourceSecureFileRead(d *schema.ResourceData, m interface{}) error {
 
 	if secureFile.Properties != nil {
 		d.Set("properties", *secureFile.Properties)
+	}
+
+	// Read authorization state via pipeline permissions API
+	resourceType := "securefile"
+	resourceId := d.Id()
+	resp, err := clients.PipelinePermissionsClient.GetPipelinePermissionsForResource(clients.Ctx,
+		pipelinepermissions.GetPipelinePermissionsForResourceArgs{
+			Project:      &projectID,
+			ResourceType: &resourceType,
+			ResourceId:   &resourceId,
+		},
+	)
+	if err == nil && resp != nil && resp.AllPipelines != nil && resp.AllPipelines.Authorized != nil {
+		d.Set("authorize", *resp.AllPipelines.Authorized)
+	} else {
+		d.Set("authorize", false)
 	}
 
 	return nil
