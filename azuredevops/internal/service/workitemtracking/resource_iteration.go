@@ -27,7 +27,9 @@ func ResourceIteration() *schema.Resource {
 			Update: schema.DefaultTimeout(10 * time.Minute),
 			Delete: schema.DefaultTimeout(10 * time.Minute),
 		},
-		Importer: tfhelper.ImportProjectQualifiedResource(),
+		Importer: &schema.ResourceImporter{
+			State: importResourceIteration,
+		},
 		Schema: map[string]*schema.Schema{
 			"project_id": {
 				Type:         schema.TypeString,
@@ -67,6 +69,41 @@ func ResourceIteration() *schema.Resource {
 			},
 		},
 	}
+}
+
+// importResourceIteration handles terraform import for iterations.
+// Import ID format: project_id/name or project_id/parent/path/name
+func importResourceIteration(d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	parts := strings.SplitN(d.Id(), "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("invalid import ID format, expected: project_id/iteration_name or project_id/parent/path/iteration_name")
+	}
+
+	projectID := parts[0]
+	fullPath := parts[1]
+
+	// Resolve project name to ID if needed
+	projectID, err := tfhelper.GetRealProjectId(projectID, m)
+	if err != nil {
+		return nil, fmt.Errorf("error resolving project ID: %+v", err)
+	}
+
+	d.Set("project_id", projectID)
+
+	// Split the remaining path into parent path and name
+	pathParts := strings.Split(fullPath, "/")
+	name := pathParts[len(pathParts)-1]
+	d.Set("name", name)
+
+	if len(pathParts) > 1 {
+		parentPath := "/" + strings.Join(pathParts[:len(pathParts)-1], "/")
+		d.Set("path", parentPath)
+	}
+
+	// Set a temporary ID; the Read function will set the real one
+	d.SetId(name)
+
+	return []*schema.ResourceData{d}, nil
 }
 
 func resourceIterationCreate(d *schema.ResourceData, m interface{}) error {
@@ -277,7 +314,7 @@ func flattenIteration(d *schema.ResourceData, node *workitemtracking.WorkItemCla
 	if node.Path != nil {
 		// Path format: \ProjectName\Iteration\ParentPath\Name
 		// We want to return the parent path
-		itemPath := convertIterationNodePath(node.Path, node.Name)
+		itemPath := convertIterationNodePath(node.Path)
 		d.Set("path", itemPath)
 	}
 
@@ -297,11 +334,10 @@ func flattenIteration(d *schema.ResourceData, node *workitemtracking.WorkItemCla
 	}
 }
 
-// convertIterationNodePath converts the node path to a relative path
+// convertIterationNodePath converts the node path to a relative parent path.
 // Input: \ProjectName\Iteration\Sprint 1\Sprint 1.1
-// Name: Sprint 1.1
-// Output: /Sprint 1 (the parent path)
-func convertIterationNodePath(path *string, name *string) string {
+// Output: /Sprint 1 (the parent path, excluding the node name)
+func convertIterationNodePath(path *string) string {
 	if path == nil {
 		return "/"
 	}

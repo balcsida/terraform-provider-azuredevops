@@ -27,7 +27,9 @@ func ResourceArea() *schema.Resource {
 			Update: schema.DefaultTimeout(10 * time.Minute),
 			Delete: schema.DefaultTimeout(10 * time.Minute),
 		},
-		Importer: tfhelper.ImportProjectQualifiedResource(),
+		Importer: &schema.ResourceImporter{
+			State: importResourceArea,
+		},
 		Schema: map[string]*schema.Schema{
 			"project_id": {
 				Type:         schema.TypeString,
@@ -55,6 +57,41 @@ func ResourceArea() *schema.Resource {
 			},
 		},
 	}
+}
+
+// importResourceArea handles terraform import for areas.
+// Import ID format: project_id/name or project_id/parent/path/name
+func importResourceArea(d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	parts := strings.SplitN(d.Id(), "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("invalid import ID format, expected: project_id/area_name or project_id/parent/path/area_name")
+	}
+
+	projectID := parts[0]
+	fullPath := parts[1]
+
+	// Resolve project name to ID if needed
+	projectID, err := tfhelper.GetRealProjectId(projectID, m)
+	if err != nil {
+		return nil, fmt.Errorf("error resolving project ID: %+v", err)
+	}
+
+	d.Set("project_id", projectID)
+
+	// Split the remaining path into parent path and name
+	pathParts := strings.Split(fullPath, "/")
+	name := pathParts[len(pathParts)-1]
+	d.Set("name", name)
+
+	if len(pathParts) > 1 {
+		parentPath := "/" + strings.Join(pathParts[:len(pathParts)-1], "/")
+		d.Set("path", parentPath)
+	}
+
+	// Set a temporary ID; the Read function will set the real one
+	d.SetId(name)
+
+	return []*schema.ResourceData{d}, nil
 }
 
 func resourceAreaCreate(d *schema.ResourceData, m interface{}) error {
@@ -225,16 +262,15 @@ func flattenArea(d *schema.ResourceData, node *workitemtracking.WorkItemClassifi
 	if node.Path != nil {
 		// Path format: \ProjectName\Area\ParentPath\Name
 		// We want to return the parent path
-		itemPath := convertAreaNodePath(node.Path, node.Name)
+		itemPath := convertAreaNodePath(node.Path)
 		d.Set("path", itemPath)
 	}
 }
 
-// convertAreaNodePath converts the node path to a relative path
+// convertAreaNodePath converts the node path to a relative parent path.
 // Input: \ProjectName\Area\Team A\Team A.1
-// Name: Team A.1
-// Output: /Team A (the parent path)
-func convertAreaNodePath(path *string, name *string) string {
+// Output: /Team A (the parent path, excluding the node name)
+func convertAreaNodePath(path *string) string {
 	if path == nil {
 		return "/"
 	}
